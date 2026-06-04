@@ -9,7 +9,7 @@ import {
 } from "discord.js";
 
 import { handleOrder } from "./orderFlow";
-import { handleTicketButtons } from "./ticket";
+import { handleTicketButtons, setTicketClient } from "./ticket";
 import { connectDB } from "./db";
 
 const client = new Client({
@@ -21,6 +21,9 @@ const client = new Client({
   ],
   partials: [Partials.Channel]
 });
+
+// 🔥 FIX: allow ticket system to access client
+setTicketClient(client);
 
 // ─────────────────────────────
 // SLASH COMMAND REGISTRATION
@@ -85,29 +88,32 @@ client.on("interactionCreate", async (interaction: Interaction) => {
       }
     }
 
-    // Select menus belong to order flow
+    // Select menus (order system only)
     if (interaction.isStringSelectMenu()) {
       return handleOrder(interaction);
     }
 
     // Buttons
     if (interaction.isButton()) {
-      // Ticket buttons
-      if (
-        interaction.customId.startsWith("claim_") ||
-        interaction.customId.startsWith("close_")
-      ) {
+      const id = interaction.customId;
+
+      // ✅ Ticket system buttons FIRST
+      if (id.startsWith("claim_") || id.startsWith("close_")) {
         return handleTicketButtons(interaction);
       }
 
-      // Order buttons (submit, confirm, etc.)
+      // ✅ Order system buttons (submit order etc.)
       return handleOrder(interaction);
     }
   } catch (error) {
     console.error("❌ Interaction error:", error);
 
     try {
-      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+      if (
+        interaction.isRepliable() &&
+        !interaction.replied &&
+        !interaction.deferred
+      ) {
         await interaction.reply({
           content: "❌ An unexpected error occurred.",
           ephemeral: true
