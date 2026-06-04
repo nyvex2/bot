@@ -1,129 +1,146 @@
 import {
   Client,
-  GatewayIntentBits,
-  Partials,
   Interaction,
-  REST,
-  Routes,
-  SlashCommandBuilder
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
+  PermissionsBitField,
+  Guild
 } from "discord.js";
 
-import { handleOrder } from "./orderFlow";
-import { handleTicketButtons, setTicketClient } from "./ticket";
-import { connectDB } from "./db";
+import { config } from "./config";
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ],
-  partials: [Partials.Channel]
-});
+let clientInstance: Client;
 
-// 🔥 FIX: allow ticket system to access client
-setTicketClient(client);
+export function setTicketClient(client: Client) {
+  clientInstance = client;
+}
 
 // ─────────────────────────────
-// SLASH COMMAND REGISTRATION
+// CREATE TICKET (FIXED)
 // ─────────────────────────────
-async function registerCommands() {
-  const TOKEN = process.env.TOKEN;
-  const CLIENT_ID = process.env.CLIENT_ID;
-  const GUILD_ID = process.env.GUILD_ID;
-
-  if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
-    console.log("❌ Missing TOKEN, CLIENT_ID or GUILD_ID");
-    return;
-  }
-
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
-
-  const commands = [
-    new SlashCommandBuilder()
-      .setName("order")
-      .setDescription("Start an order")
-      .toJSON()
-  ];
-
+export async function createTicket(
+  guildId: string,
+  userId: string,
+  order: any
+) {
   try {
-    console.log("🔄 Registering slash commands...");
+    console.log("📦 Creating ticket...");
+    console.log("Guild ID:", guildId);
 
-    await rest.put(
-      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-      { body: commands }
+    // 🔥 FIX: always fetch guild properly (cache OR API)
+    const guild: Guild =
+      clientInstance.guilds.cache.get(guildId) ||
+      (await clientInstance.guilds.fetch(guildId));
+
+    if (!guild) {
+      console.log("❌ Guild not found");
+      return;
+    }
+
+    console.log("✅ Guild found:", guild.name);
+
+    const ownerRole = guild.roles.cache.find(
+      r => r.name === config.ownerRoleName
     );
 
-    console.log("✅ Slash commands registered");
-  } catch (error) {
-    console.error("❌ Command registration failed:", error);
+    // 🔥 FIX: safer channel creation
+    const channel = await guild.channels.create({
+      name: `order-${order.orderId}`,
+      type: ChannelType.GuildText,
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionsBitField.Flags.ViewChannel]
+        },
+        {
+          id: userId,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ReadMessageHistory
+          ]
+        },
+        ...(ownerRole
+          ? [
+              {
+                id: ownerRole.id,
+                allow: [
+                  PermissionsBitField.Flags.ViewChannel,
+                  PermissionsBitField.Flags.SendMessages,
+                  PermissionsBitField.Flags.ReadMessageHistory
+                ]
+              }
+            ]
+          : [])
+      ]
+    });
+
+    console.log("✅ Ticket created:", channel.name);
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🧾 Order #${order.orderId}`)
+      .setColor(0x00ff99)
+      .addFields(
+        { name: "User", value: `<@${userId}>`, inline: true },
+        { name: "Category", value: order.category || "N/A", inline: true },
+        { name: "Service", value: order.service || "N/A", inline: true },
+        { name: "Budget", value: order.budget || "N/A", inline: true }
+      )
+      .setTimestamp();
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`claim_${order.orderId}`)
+        .setLabel("Claim")
+        .setStyle(ButtonStyle.Primary),
+
+      new ButtonBuilder()
+        .setCustomId(`close_${order.orderId}`)
+        .setLabel("Close")
+        .setStyle(ButtonStyle.Danger)
+    );
+
+    await channel.send({
+      content: ownerRole ? `<@&${ownerRole.id}>` : "",
+      embeds: [embed],
+      components: [row]
+    });
+
+    return channel;
+  } catch (err) {
+    console.error("❌ createTicket error:", err);
   }
 }
 
 // ─────────────────────────────
-// READY
+// BUTTON HANDLERS (FIXED)
 // ─────────────────────────────
-client.once("ready", async () => {
-  console.log(`🤖 Logged in as ${client.user?.tag}`);
+export async function handleTicketButtons(i: Interaction) {
+  if (!i.isButton()) return;
 
-  try {
-    await connectDB();
-  } catch (error) {
-    console.error("❌ MongoDB connection failed:", error);
+  const [action, id] = i.customId.split("_");
+
+  if (action === "claim") {
+    return i.reply({
+      content: `📌 Order #${id} claimed by ${i.user}`,
+      ephemeral: false
+    });
   }
 
-  await registerCommands();
-});
+  if (action === "close") {
+    await i.reply({
+      content: "🔒 Closing ticket in 3 seconds..."
+    });
 
-// ─────────────────────────────
-// INTERACTIONS
-// ─────────────────────────────
-client.on("interactionCreate", async (interaction: Interaction) => {
-  try {
-    // Slash commands
-    if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === "order") {
-        return handleOrder(interaction);
+    setTimeout(async () => {
+      try {
+        await i.channel?.delete();
+      } catch (err) {
+        console.log("❌ Failed to delete channel:", err);
       }
-    }
-
-    // Select menus (order system only)
-    if (interaction.isStringSelectMenu()) {
-      return handleOrder(interaction);
-    }
-
-    // Buttons
-    if (interaction.isButton()) {
-      const id = interaction.customId;
-
-      // ✅ Ticket system buttons FIRST
-      if (id.startsWith("claim_") || id.startsWith("close_")) {
-        return handleTicketButtons(interaction);
-      }
-
-      // ✅ Order system buttons (submit order etc.)
-      return handleOrder(interaction);
-    }
-  } catch (error) {
-    console.error("❌ Interaction error:", error);
-
-    try {
-      if (
-        interaction.isRepliable() &&
-        !interaction.replied &&
-        !interaction.deferred
-      ) {
-        await interaction.reply({
-          content: "❌ An unexpected error occurred.",
-          ephemeral: true
-        });
-      }
-    } catch {}
+    }, 3000);
   }
-});
-
-// ─────────────────────────────
-// LOGIN
-// ─────────────────────────────
-client.login(process.env.TOKEN);
+}
