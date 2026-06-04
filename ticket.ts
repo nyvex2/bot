@@ -18,101 +18,144 @@ export function setTicketClient(client: Client) {
   clientInstance = client;
 }
 
+// ─────────────────────────────
+// CREATE TICKET (FIXED)
+// ─────────────────────────────
 export async function createTicket(
   guildId: string,
   userId: string,
   order: any
 ) {
-  const guild: Guild | undefined =
-    clientInstance.guilds.cache.get(guildId);
+  try {
+    console.log("🟡 Creating ticket...");
+    console.log("Guild ID:", guildId);
 
-  if (!guild) {
-    throw new Error("Guild not found");
-  }
+    if (!clientInstance) {
+      console.log("❌ Client not set");
+      return;
+    }
 
-  const ownerRole = guild.roles.cache.find(
-    r => r.name === config.ownerRoleName
-  );
+    // ✅ FIX: cache + fetch fallback (IMPORTANT FOR RAILWAY)
+    const guild: Guild | null =
+      clientInstance.guilds.cache.get(guildId) ||
+      (await clientInstance.guilds.fetch(guildId).catch(() => null));
 
-  const channel = await guild.channels.create({
-    name: `order-${order.orderId}`,
-    type: ChannelType.GuildText,
-    permissionOverwrites: [
-      {
-        id: guild.roles.everyone.id,
-        deny: [PermissionsBitField.Flags.ViewChannel]
-      },
-      {
-        id: userId,
-        allow: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.SendMessages,
-          PermissionsBitField.Flags.ReadMessageHistory
-        ]
-      },
-      ...(ownerRole
-        ? [
-            {
-              id: ownerRole.id,
-              allow: [
-                PermissionsBitField.Flags.ViewChannel,
-                PermissionsBitField.Flags.SendMessages,
-                PermissionsBitField.Flags.ReadMessageHistory
-              ]
-            }
+    if (!guild) {
+      console.log("❌ Guild not found or bot not in server:", guildId);
+      return;
+    }
+
+    console.log("✅ Guild found:", guild.name);
+
+    // ✅ Permission check
+    const me = guild.members.me;
+    if (!me?.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+      console.log("❌ Bot missing Manage Channels permission");
+      return;
+    }
+
+    const ownerRole = guild.roles.cache.find(
+      r => r.name === config.ownerRoleName
+    );
+
+    // ─────────────────────────────
+    // CHANNEL CREATION
+    // ─────────────────────────────
+    const channel = await guild.channels.create({
+      name: `order-${order.orderId}`,
+      type: ChannelType.GuildText,
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionsBitField.Flags.ViewChannel]
+        },
+        {
+          id: userId,
+          allow: [
+            PermissionsBitField.Flags.ViewChannel,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.ReadMessageHistory
           ]
-        : [])
-    ]
-  });
+        },
+        ...(ownerRole
+          ? [
+              {
+                id: ownerRole.id,
+                allow: [
+                  PermissionsBitField.Flags.ViewChannel,
+                  PermissionsBitField.Flags.SendMessages,
+                  PermissionsBitField.Flags.ReadMessageHistory
+                ]
+              }
+            ]
+          : [])
+      ]
+    });
 
-  const embed = new EmbedBuilder()
-    .setTitle(`🧾 Order #${order.orderId}`)
-    .setColor(0x00ff99)
-    .addFields(
-      {
-        name: "Customer",
-        value: `<@${userId}>`,
-        inline: true
-      },
-      {
-        name: "Category",
-        value: order.category || "Unknown",
-        inline: true
-      },
-      {
-        name: "Service",
-        value: order.service || "Unknown",
-        inline: true
-      },
-      {
-        name: "Budget",
-        value: order.budget || "Not Provided",
-        inline: true
-      }
-    )
-    .setTimestamp();
+    console.log("✅ Ticket created:", channel.name);
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`claim_${order.orderId}`)
-      .setLabel("Claim Order")
-      .setStyle(ButtonStyle.Primary),
+    // ─────────────────────────────
+    // EMBED
+    // ─────────────────────────────
+    const embed = new EmbedBuilder()
+      .setTitle(`🧾 Order #${order.orderId}`)
+      .setColor(0x00ff99)
+      .addFields(
+        {
+          name: "Customer",
+          value: `<@${userId}>`,
+          inline: true
+        },
+        {
+          name: "Category",
+          value: order.category || "Unknown",
+          inline: true
+        },
+        {
+          name: "Service",
+          value: order.service || "Unknown",
+          inline: true
+        },
+        {
+          name: "Budget",
+          value: order.budget || "Not Provided",
+          inline: true
+        }
+      )
+      .setTimestamp();
 
-    new ButtonBuilder()
-      .setCustomId(`close_${order.orderId}`)
-      .setLabel("Close Ticket")
-      .setStyle(ButtonStyle.Danger)
-  );
+    // ─────────────────────────────
+    // BUTTONS
+    // ─────────────────────────────
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`claim_${order.orderId}`)
+        .setLabel("Claim Order")
+        .setStyle(ButtonStyle.Primary),
 
-  await channel.send({
-    content: ownerRole ? `<@&${ownerRole.id}>` : "",
-    embeds: [embed],
-    components: [row]
-  });
+      new ButtonBuilder()
+        .setCustomId(`close_${order.orderId}`)
+        .setLabel("Close Ticket")
+        .setStyle(ButtonStyle.Danger)
+    );
 
-  return channel;
+    await channel.send({
+      content: ownerRole ? `<@&${ownerRole.id}>` : "",
+      embeds: [embed],
+      components: [row]
+    });
+
+    console.log("✅ Ticket message sent");
+
+    return channel;
+  } catch (err) {
+    console.log("❌ createTicket ERROR:", err);
+  }
 }
 
+// ─────────────────────────────
+// BUTTON HANDLERS
+// ─────────────────────────────
 export async function handleTicketButtons(i: Interaction) {
   if (!i.isButton()) return;
 
@@ -132,7 +175,9 @@ export async function handleTicketButtons(i: Interaction) {
     setTimeout(async () => {
       try {
         await i.channel?.delete();
-      } catch {}
+      } catch (err) {
+        console.log("❌ Failed to delete channel:", err);
+      }
     }, 3000);
   }
 }
